@@ -110,6 +110,8 @@ Type=oneshot
 Environment=HOME=/root TERM=dumb
 ExecStart=$REPO/factory/factory-install.sh --reboot
 TimeoutStartSec=infinity
+# The FreePBX installer starts Asterisk itself; when this unit ends, keep what it started running
+KillMode=process
 StandardOutput=journal+console
 StandardError=journal+console
 
