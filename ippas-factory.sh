@@ -28,6 +28,9 @@ UNIT_FILE=/etc/systemd/system/$UNIT
 say() { printf 'ippas-factory: %s\n' "$*"; }
 die() { printf 'ippas-factory: ERROR: %s\n' "$*" >&2; exit 1; }
 
+# Everything runs inside main(), called on the last line: bash reads the whole script before it
+# runs any of it, so nothing in it (apt, git) can swallow the rest of a piped script.
+main() {
 [ "$(id -u)" -eq 0 ] || die "run as root (su -, then the same command)"
 case $IPPAS_REF in ''|*[!A-Za-z0-9._/+-]*) die "IPPAS_REF has unsafe characters" ;; esac
 
@@ -60,9 +63,17 @@ fi
 if [ ! -s "$TOKEN_FILE" ]; then
     [ -r /dev/tty ] || die "no keyboard to read the token from; run it from an interactive session"
     install -d -m 700 "${TOKEN_FILE%/*}"
-    read -rsp 'GitHub read token (input hidden): ' T </dev/tty; echo
-    T=$(printf '%s' "$T" | tr -d ' \r\n')
-    [[ $T =~ ^github_pat_[A-Za-z0-9_]+$ ]] || die "that does not look like a GitHub token (github_pat_...)"
+    # drop anything already typed (an Enter pressed during apt would answer the prompt empty)
+    while read -r -t 0.3 -n 10000 _ </dev/tty; do :; done
+    T=""
+    for try in 1 2 3; do
+        read -rsp 'GitHub read token (input hidden, then Enter): ' T </dev/tty || T=""; echo
+        T=$(printf '%s' "$T" | tr -d ' \r\n')
+        [[ $T =~ ^github_pat_[A-Za-z0-9_]+$ ]] && break
+        if [ -z "$T" ]; then say "nothing entered (try $try of 3)"; else say "that does not look like a GitHub token, it should start with github_pat_ (try $try of 3)"; fi
+        T=""
+    done
+    [ -n "$T" ] || die "no valid token entered"
     (umask 077; printf '%s' "$T" >"$TOKEN_FILE")
     unset T
     say "token saved to $TOKEN_FILE (mode 600)"
@@ -111,3 +122,6 @@ systemctl enable "$UNIT" >/dev/null 2>&1
 systemctl start --no-block "$UNIT"
 say "started $UNIT (it resumes by itself after each reboot; about 80 min and two reboots in all)"
 watch_progress
+}
+
+main "$@"
