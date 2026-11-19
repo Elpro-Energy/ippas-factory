@@ -1,9 +1,10 @@
 #!/bin/bash
 # ippas-factory.sh - the one command a technician runs on a fresh Debian 12 box, as root:
 #
-#   wget -qO- https://raw.githubusercontent.com/Elpro-Energy/ippas-factory/main/ippas-factory.sh | bash
+#   wget -O- https://raw.githubusercontent.com/Elpro-Energy/ippas-factory/main/ippas-factory.sh | bash
 #
-# (or: curl -fsSL <same URL> | bash). Public on purpose: it holds no secrets.
+# (no -q, so a failed download shows its error; or: curl -fsSL <same URL> | bash).
+# Public on purpose: it holds no secrets.
 #
 # First run: asks for the GitHub read token (hidden, from the keyboard even when piped), clones the
 # private IP-PAS repo at the release tag with a throwaway askpass helper (no token in .git/config),
@@ -38,7 +39,8 @@ case $IPPAS_REF in ''|*[!A-Za-z0-9._/+-]*) die "IPPAS_REF has unsafe characters"
 watch_progress() {
     say "the install runs in the background ($UNIT); Ctrl-C only stops watching"
     say "full logs: $LOG_DIR/  (after a reboot, run this same command again to watch)"
-    exec journalctl -f -n 40 -o cat -u "$UNIT"
+    # only the install's own output: FreePBX's runuser/crontab syslog lines are left out
+    exec journalctl -f -n 40 -o cat _SYSTEMD_UNIT="$UNIT" SYSLOG_IDENTIFIER=factory-install.sh
 }
 
 if [ -e "$STATE_DIR/factory.done" ]; then
@@ -122,7 +124,7 @@ mv -f "$UNIT_FILE.tmp" "$UNIT_FILE"
 systemctl daemon-reload
 systemctl enable "$UNIT" >/dev/null 2>&1
 systemctl start --no-block "$UNIT"
-say "started $UNIT (it resumes by itself after each reboot; about 80 min and two reboots in all)"
+say "started $UNIT (it resumes by itself after each reboot; 2 to 3.5 hours and two reboots in all)"
 watch_progress
 }
 

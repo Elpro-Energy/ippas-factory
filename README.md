@@ -1,13 +1,11 @@
-# IP-PAS factory bootstrap
+# ippas-factory
 
-Turns a fresh Debian 12 (amd64) box into an IP-PAS appliance. On the box, as root:
+The one command that turns a fresh Debian 12 box into an IP-PAS appliance. Run it as root:
 
 ```bash
-wget -qO- https://raw.githubusercontent.com/Elpro-Energy/ippas-factory/main/ippas-factory.sh | bash
+wget -O- https://raw.githubusercontent.com/Elpro-Energy/ippas-factory/main/ippas-factory.sh | bash
 ```
 
-You need the factory access token. The script asks for it with the input hidden.
+It asks for the GitHub read token, clones the private IP-PAS repo and starts the install, which carries on by itself through two reboots until `FACTORY OK` (2 to 3.5 hours). Ctrl-C only stops watching; run the same command again to watch. Full instructions: `factory/README.md` in the IP-PAS repo.
 
-The box installs itself in about 80 minutes and reboots twice. It continues by itself after each reboot, so you can close the session. To watch progress, run the same command again. When the box is done, the log ends with `FACTORY OK`.
-
-This repository holds only the bootstrap. The appliance software is private.
+This repo is public on purpose and holds no secrets.
