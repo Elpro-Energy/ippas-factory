@@ -6,21 +6,27 @@
 # (no -q, so a failed download shows its error; or: curl -fsSL <same URL> | bash).
 # Public on purpose: it holds no secrets.
 #
-# First run: asks for the GitHub read token (hidden, from the keyboard even when piped), clones the
-# private IP-PAS repo at the release tag with a throwaway askpass helper (no token in .git/config),
+# First run: asks for the GitHub read token and the enrolment code (both hidden, from the keyboard
+# even when piped), clones the private IP-PAS repo at the release tag with a throwaway askpass helper (no token in .git/config),
 # and installs + starts ippas-factory-resume.service, which runs factory/factory-install.sh --reboot
 # now and again after every reboot until the box reaches FACTORY OK. The install does not depend on
 # this SSH session: Ctrl-C only stops watching. Running the same line again shows the progress.
+#
+# The enrolment code (XXXX-XXXX-XXXX, from the hub admin) is saved to /root/.config/ippas/enrol-code
+# (mode 600); factory step 97 uses it to register the box on the remote-access hub and then deletes
+# it. A re-run asks for it again only if it is missing or malformed and the box is not enrolled yet.
 #
 # Env: IPPAS_REF   tag or branch to clone (default below; a test can use a branch name)
 
 set -euo pipefail
 
-IPPAS_REF=${IPPAS_REF:-v1.0.0-rc.5}
+IPPAS_REF=${IPPAS_REF:-v1.0.0-rc.6}
 REPO_URL=https://github.com/Elpro-Energy/ippas-onprem.git
 APP_USER=sangoma
 REPO=/home/$APP_USER/ippas-onprem
 TOKEN_FILE=/root/.config/ippas/github-read-token
+ENROL_CODE_FILE=/root/.config/ippas/enrol-code
+ENROL_STATE=/etc/ippas-remote/enrolment
 STATE_DIR=/var/lib/ippas-factory
 LOG_DIR=/var/log/ippas-factory
 UNIT=ippas-factory-resume.service
@@ -28,6 +34,53 @@ UNIT_FILE=/etc/systemd/system/$UNIT
 
 say() { printf 'ippas-factory: %s\n' "$*"; }
 die() { printf 'ippas-factory: ERROR: %s\n' "$*" >&2; exit 1; }
+
+# Enrolment code: Crockford base32, three groups of four. Lower case, spaces, missing dashes and
+# O/I/L are accepted, exactly as ippas-enrol and the hub accept them. Prints the normal form.
+norm_code() {
+    local s=${1^^}
+    s=${s//[-[:space:]]/}
+    s=${s//O/0}; s=${s//I/1}; s=${s//L/1}
+    [[ $s =~ ^[0-9ABCDEFGHJKMNPQRSTVWXYZ]{12}$ ]] || return 1
+    printf '%s-%s-%s' "${s:0:4}" "${s:4:4}" "${s:8:4}"
+}
+
+# 0 if the code must be asked for: the box is not enrolled (no 97-enroll.done, no enrolment state)
+# and there is no well-formed code saved.
+need_enrol_code() {
+    local raw
+    [ ! -e "$STATE_DIR/97-enroll.done" ] || return 1
+    [ ! -s "$ENROL_STATE" ] || return 1
+    [ -s "$ENROL_CODE_FILE" ] || return 0
+    raw=$(grep -m1 -v '^[[:space:]]*$' "$ENROL_CODE_FILE" 2>/dev/null | tr -d '\r') || raw=""
+    if norm_code "$raw" >/dev/null; then return 1; fi
+    say "the saved enrolment code in $ENROL_CODE_FILE is malformed; asking again"
+    return 0
+}
+
+# Hidden prompt; the code is never echoed or logged.
+ask_enrol_code() {
+    local a na try
+    [ -r /dev/tty ] || die "no keyboard to read the enrolment code from; run it from an interactive session"
+    install -d -m 700 "${ENROL_CODE_FILE%/*}"
+    while read -r -t 0.3 -n 10000 _ </dev/tty; do :; done
+    for try in 1 2 3; do
+        a=""; na=""
+        read -rsp 'Enrolment code XXXX-XXXX-XXXX (input hidden, then Enter): ' a </dev/tty || a=""; echo
+        if [ -z "${a//[[:space:]]/}" ]; then say "nothing entered (try $try of 3)"; continue; fi
+        if ! na=$(norm_code "$a"); then
+            say "that is not an enrolment code: 12 letters and digits, like ABCD-EFGH-JKMN (try $try of 3)"
+            continue
+        fi
+        (umask 077; printf '%s\n' "$na" >"$ENROL_CODE_FILE.tmp") && mv -f "$ENROL_CODE_FILE.tmp" "$ENROL_CODE_FILE" \
+            || die "could not write $ENROL_CODE_FILE"
+        unset a na
+        say "enrolment code saved to $ENROL_CODE_FILE (mode 600)"
+        return 0
+    done
+    unset a na
+    die "no valid enrolment code entered (ask the hub admin: sudo ippas-enroll code new ...)"
+}
 
 # Everything runs inside main(), called on the last line: bash reads the whole script before it
 # runs any of it, so nothing in it (apt, git) can swallow the rest of a piped script.
@@ -79,6 +132,10 @@ if [ ! -s "$TOKEN_FILE" ]; then
     (umask 077; printf '%s' "$T" >"$TOKEN_FILE")
     unset T
     say "token saved to $TOKEN_FILE (mode 600)"
+fi
+
+if need_enrol_code; then
+    ask_enrol_code
 fi
 
 id -u "$APP_USER" >/dev/null 2>&1 || useradd -m -s /bin/bash "$APP_USER"
