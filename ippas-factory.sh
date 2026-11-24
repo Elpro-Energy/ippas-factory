@@ -20,7 +20,7 @@
 
 set -euo pipefail
 
-IPPAS_REF=${IPPAS_REF:-v1.0.0-rc.7}
+IPPAS_REF=${IPPAS_REF:-v1.0.0}
 REPO_URL=https://github.com/Elpro-Energy/ippas-onprem.git
 APP_USER=sangoma
 REPO=/home/$APP_USER/ippas-onprem
