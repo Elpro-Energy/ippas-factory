@@ -16,11 +16,17 @@
 # (mode 600); factory step 97 uses it to register the box on the remote-access hub and then deletes
 # it. A re-run asks for it again only if it is missing or malformed and the box is not enrolled yet.
 #
+# Then it asks for the appliance name (e.g. elproenergy), which becomes the hostname before anything
+# is installed: the customer reaches the dashboard at https://<name>.local:9443 on their LAN, and the
+# hub lists the name as the unit's client. Asked only before the install has started; Enter keeps
+# the current hostname if it is a real name (not Debian's default "debian").
+#
 # Env: IPPAS_REF   tag or branch to clone (default below; a test can use a branch name)
+#      IPPAS_NAME  appliance name; skips the name prompt
 
 set -euo pipefail
 
-IPPAS_REF=${IPPAS_REF:-v1.0.0}
+IPPAS_REF=${IPPAS_REF:-v1.0.1}
 REPO_URL=https://github.com/Elpro-Energy/ippas-onprem.git
 APP_USER=sangoma
 REPO=/home/$APP_USER/ippas-onprem
@@ -31,6 +37,7 @@ STATE_DIR=/var/lib/ippas-factory
 LOG_DIR=/var/log/ippas-factory
 UNIT=ippas-factory-resume.service
 UNIT_FILE=/etc/systemd/system/$UNIT
+HOSTS_FILE=${IPPAS_HOSTS_FILE:-/etc/hosts}
 
 say() { printf 'ippas-factory: %s\n' "$*"; }
 die() { printf 'ippas-factory: ERROR: %s\n' "$*" >&2; exit 1; }
@@ -80,6 +87,65 @@ ask_enrol_code() {
     done
     unset a na
     die "no valid enrolment code entered (ask the hub admin: sudo ippas-enroll code new ...)"
+}
+
+# Appliance name -> hostname. One lowercase DNS label (configure-host and avahi need that);
+# "Elpro Energy" becomes "elproenergy". Prints the normal form.
+norm_name() {
+    local s=${1,,}
+    s=${s//[[:space:]_]/}
+    [[ $s =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$ ]] || return 1
+    case $s in debian|localhost) return 1 ;; esac
+    printf '%s' "$s"
+}
+
+# 0 if the name must still be chosen: the install has not started yet.
+need_name() { [ ! -e "$STATE_DIR/10-base-packages.done" ]; }
+
+set_name() {
+    local n=$1 cur
+    cur=$(hostname)
+    if [ "$n" != "$cur" ]; then
+        hostnamectl set-hostname "$n" || die "could not set the hostname to $n"
+        if grep -qE '^127\.0\.1\.1[[:space:]]' "$HOSTS_FILE"; then
+            sed -i -E "s/^127\.0\.1\.1[[:space:]].*/127.0.1.1\t$n/" "$HOSTS_FILE"
+        else
+            printf '127.0.1.1\t%s\n' "$n" >>"$HOSTS_FILE"
+        fi
+        say "appliance name set to $n (was $cur)"
+    fi
+    say "appliance name: $n (dashboard on the customer LAN: https://$n.local:9443)"
+}
+
+ask_name() {
+    local a n cur keep="" try
+    cur=$(hostname)
+    if [ -n "${IPPAS_NAME:-}" ]; then
+        n=$(norm_name "$IPPAS_NAME") || die "IPPAS_NAME '$IPPAS_NAME' is not a usable name (letters, digits, hyphens)"
+        set_name "$n"; return 0
+    fi
+    [ -r /dev/tty ] || die "no keyboard to read the appliance name from; run it from an interactive session"
+    keep=$(norm_name "$cur") || keep=""
+    [ "$keep" = "$cur" ] || keep=""
+    while read -r -t 0.3 -n 10000 _ </dev/tty; do :; done
+    for try in 1 2 3; do
+        a=""
+        if [ -n "$keep" ]; then
+            read -rp "Appliance name, e.g. elproenergy (Enter keeps $keep): " a </dev/tty || a=""
+            [ -n "${a//[[:space:]]/}" ] || a=$keep
+        else
+            read -rp 'Appliance name, e.g. elproenergy: ' a </dev/tty || a=""
+        fi
+        if [ -z "${a//[[:space:]]/}" ]; then say "nothing entered (try $try of 3)"; continue; fi
+        if ! n=$(norm_name "$a"); then
+            say "'$a' cannot be used: letters, digits and hyphens only, not starting or ending with a hyphen (try $try of 3)"
+            continue
+        fi
+        [ "$n" = "$a" ] || say "using $n"
+        set_name "$n"
+        return 0
+    done
+    die "no usable appliance name entered"
 }
 
 # Everything runs inside main(), called on the last line: bash reads the whole script before it
@@ -136,6 +202,10 @@ fi
 
 if need_enrol_code; then
     ask_enrol_code
+fi
+
+if need_name; then
+    ask_name
 fi
 
 id -u "$APP_USER" >/dev/null 2>&1 || useradd -m -s /bin/bash "$APP_USER"
